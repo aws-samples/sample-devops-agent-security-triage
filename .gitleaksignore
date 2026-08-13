@@ -1,12 +1,1 @@
-# All findings below are false positives.
-# AKIAI44QH8DHBEXAMPLE is AWS's official documentation placeholder key,
-# used intentionally in example investigation findings for the security triage lab.
-266ed7da8b05cb336b43758785201b35bcd406f3:SCANNER-FINDINGS.md:aws-access-token:76
-b9399011eb408138323dded8cff5852ff307eb65:findings/scenario1-credential-misuse-finding.md:aws-access-token:78
-b9399011eb408138323dded8cff5852ff307eb65:findings/scenario2-open-security-group-finding.md:aws-access-token:15
-b9399011eb408138323dded8cff5852ff307eb65:findings/scenario1-credential-misuse-finding.md:aws-access-token:16
-b9399011eb408138323dded8cff5852ff307eb65:findings/scenario1-credential-misuse-finding.md:aws-access-token:86
-b9399011eb408138323dded8cff5852ff307eb65:findings/scenario1-credential-misuse-finding.md:aws-access-token:91
-b9399011eb408138323dded8cff5852ff307eb65:findings/scenario2-open-security-group-finding.md:aws-access-token:57
-b9399011eb408138323dded8cff5852ff307eb65:findings/scenario1-credential-misuse-finding.md:aws-access-token:87
-b9399011eb408138323dded8cff5852ff307eb65:findings/scenario1-credential-misuse-finding.md:aws-access-token:6
+# .gitleaksignore also no longer needed
