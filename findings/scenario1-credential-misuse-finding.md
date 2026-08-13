@@ -3,7 +3,7 @@ I now have a complete picture from both data sources. Here's the full forensic r
 ───
 *Forensic Reconstruction: `sectriage-demo-user` Activity*
 
-*Account:* 111122223333 | *Region:* us-east-1 | *Source IP:* `203.0.113.42` (all calls) | *User Agent:* `aws-cli/1.45.55` on macOS arm64 | *Access Key Used:* `AKIAIOSFODNN7EXAMPLE`
+*Account:* 111122223333 | *Region:* us-east-1 | *Source IP:* `203.0.113.42` (all calls) | *User Agent:* `aws-cli/1.45.55` on macOS arm64 | *Access Key Used:* `AKEXAMPLEKEYOSFODNN7`
 
 ───
 *Complete API Call Timeline (44 calls in ~36 seconds)*
@@ -13,7 +13,7 @@ I now have a complete picture from both data sources. Here's the full forensic r
 1  02:38:10  `GetCallerIdentity`  sts  ✅ *SUCCESS*  Identity verification
 2  02:38:11  `ListUsers`  iam  ✅ *SUCCESS*  Enumerated all IAM users
 3  02:38:12  `ListAttachedUserPolicies`  iam  ✅ *SUCCESS*  Checked own attached policies
-4  02:38:13  `CreateAccessKey`  iam  ✅ *SUCCESS*  *Created new key `AKIAI44QH8DHBEXAMPLE`*
+4  02:38:13  `CreateAccessKey`  iam  ✅ *SUCCESS*  *Created new key `AKEXAMPLEKEY44QH8DHB`*
 5  02:38:14  `AttachUserPolicy`  iam  ❌ *ACCESS DENIED*  Privilege escalation blocked
 6  02:38:15  `ListObjects`  s3  ✅ *SUCCESS*  Listed `customer-records/` prefix
 7  02:38:25  `GetObject`  s3  ✅ *SUCCESS*  `customer-records/customer-12.json`
@@ -75,7 +75,7 @@ Metric  Value
 Phase  MITRE Tactic  Actions
 
 *1. Recon*  Discovery  `GetCallerIdentity` → `ListUsers` → `ListAttachedUserPolicies`
-*2. Persistence*  Persistence  `CreateAccessKey` → new key *`AKIAI44QH8DHBEXAMPLE`* now active
+*2. Persistence*  Persistence  `CreateAccessKey` → new key *`AKEXAMPLEKEY44QH8DHB`* now active
 *3. Priv-Esc (failed)*  Privilege Escalation  `AttachUserPolicy` → *DENIED*
 *4. Exfiltration*  Collection + Exfiltration  `ListObjects` → 38× `GetObject` on customer PII
 
@@ -83,9 +83,9 @@ Phase  MITRE Tactic  Actions
 *Recommendations*
 
 1. *Immediately deactivate both access keys* for `sectriage-demo-user`:
-   • Original key: `AKIAIOSFODNN7EXAMPLE`
-   • Newly-created persistence key: `AKIAI44QH8DHBEXAMPLE`
+   • Original key: `AKEXAMPLEKEYOSFODNN7`
+   • Newly-created persistence key: `AKEXAMPLEKEY44QH8DHB`
 2. *Rotate or delete* the IAM user entirely if not needed.
 3. *Assess data exposure* — 38 customer record files (each 209 bytes) were fully downloaded; evaluate PII content for breach notification obligations.
 4. *Block source IP* `203.0.113.42` via WAF/SCPs if appropriate.
-5. *Investigate credential provenance* — determine how the original access key `AKIAIOSFODNN7EXAMPLE` was compromised (code repo leak, phishing, metadata service exposure, etc.).
+5. *Investigate credential provenance* — determine how the original access key `AKEXAMPLEKEYOSFODNN7` was compromised (code repo leak, phishing, metadata service exposure, etc.).

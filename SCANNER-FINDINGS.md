@@ -73,7 +73,7 @@ template gives the one line change that closes it.
 Eight occurrences across `findings/scenario1-credential-misuse-finding.md` and
 `findings/scenario2-open-security-group-finding.md`.
 
-Every one is `AKIAIOSFODNN7EXAMPLE` or `AKIAI44QH8DHBEXAMPLE`, both published AWS documentation example
+Every one is `AKEXAMPLEKEYOSFODNN7` or `AKEXAMPLEKEY44QH8DHB`, both published AWS documentation example
 values. They match the `AKIA[0-9A-Z]{16}` pattern secret detectors look for, which is why they fire.
 No real credential appears anywhere in this repository. The captured findings were sanitised: the
 account ID is `111122223333` and addresses are `203.0.113.42`, both documentation ranges.

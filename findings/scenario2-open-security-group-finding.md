@@ -12,7 +12,7 @@ Attribute  Value
 
 *Principal ARN*  `arn:aws:iam::111122223333:user/test_user`
 *Principal ID*  `AIDACKCEVSQ6C2EXAMPLE`
-*Access Key*  `AKIAIOSFODNN7EXAMPLE`
+*Access Key*  `AKEXAMPLEKEYOSFODNN7`
 *Source IP*  `203.0.113.42`
 *User Agent*  `aws-cli/1.45.55` (macOS arm64, Python 3.10.20)
 *Timestamp*  `2026-08-10T02:49:17Z`
@@ -54,5 +54,5 @@ All 21 flow log records for ENI `eni-0123456789abcdef0` from `02:28Z` to `02:55Z
    aws ec2 revoke-security-group-ingress --group-id sg-0123456789abcdef0 \
      --security-group-rule-ids sgr-0123456789abcdef0 --region us-east-1
    ```
-2. *Investigate the principal* — determine whether `test_user`'s action from `203.0.113.42` was authorized, and consider rotating access key `AKIAIOSFODNN7EXAMPLE` if not.
+2. *Investigate the principal* — determine whether `test_user`'s action from `203.0.113.42` was authorized, and consider rotating access key `AKEXAMPLEKEYOSFODNN7` if not.
 3. *Preventive controls* — deploy an SCP or AWS Config rule (`restricted-ssh`) to prevent future `0.0.0.0/0` ingress on port 22 across the account.
