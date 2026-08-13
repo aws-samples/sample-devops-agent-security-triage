@@ -1,0 +1,8 @@
+# Rendered prompts contain the account ID and resource IDs of whoever deployed
+# the lab. The templates in prompts/ are the committed source of truth.
+prompts/rendered/
+
+# Local convenience files
+*.log
+.DS_Store
+.env

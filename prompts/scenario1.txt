@@ -1,0 +1,9 @@
+An alarm fired for CreateAccessKey by __PREFIX__-demo-user in account __ACCOUNT_ID__, __REGION__.
+Reconstruct every API call this principal made in the last hour from CloudTrail, in order, with the
+source IP and the result of each call. Tell me which calls succeeded, which were denied, and how many
+S3 objects the principal read.
+
+Evidence locations:
+- CloudTrail management events: log group /aws/cloudtrail/__PREFIX__
+- CloudTrail S3 data events and delivered trail files: s3://__TRAIL_BUCKET__/AWSLogs/__ACCOUNT_ID__/CloudTrail/
+- Lab bucket the principal read from: __LAB_BUCKET__

@@ -1,0 +1,10 @@
+A security group in account __ACCOUNT_ID__, __REGION__ was opened to 0.0.0.0/0. Identify the
+principal, the time, and the source IP of the change. List every resource attached to that security
+group. Then check VPC Flow Logs for accepted inbound traffic on the affected port since the change,
+and tell me whether anything reached the instance.
+
+Evidence locations:
+- CloudTrail management events: log group /aws/cloudtrail/__PREFIX__
+- VPC Flow Logs: log group /aws/vpc/flowlogs/__PREFIX__
+- Security group: __SECURITY_GROUP_ID__
+- Instance the group is attached to: __INSTANCE_ID__

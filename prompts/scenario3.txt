@@ -1,0 +1,12 @@
+More than 50 rejected requests hit the payments-api in five minutes, in account __ACCOUNT_ID__,
+__REGION__. Read the application log group and characterize the traffic: how many requests, over what
+window, from which source addresses, and what categories of request. Then tell me whether any request
+succeeded, and say so explicitly if the logs cannot answer that.
+
+Evidence locations:
+- Application logs: log group /aws/lambda/__PREFIX__-payments-api
+- Each log line is JSON with fields: category, outcome, http_status, path, attempted_username,
+  source_ip, session_issued
+
+Note that the alarm counts every rejected request, not one category. The split between authentication
+failures, injection attempts and traversal attempts is for the investigation to establish.

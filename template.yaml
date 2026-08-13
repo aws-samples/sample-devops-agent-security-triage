@@ -1,0 +1,569 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Security triage lab for AWS DevOps Agent. Provisions the evidence sources for
+  three OWASP-mapped scenarios: a scoped demo IAM user, a lab S3 bucket with
+  synthetic records, a payment API that emits structured JSON logs, and an EC2
+  instance in a private subnet with VPC Flow Logs. Deploy in a sandbox account
+  only. See README.md for the deploy and teardown procedure.
+
+Parameters:
+
+  NamePrefix:
+    Type: String
+    Default: sectriage
+    AllowedPattern: '[a-z0-9-]{3,20}'
+    Description: Lowercase prefix for resource names.
+
+  LogRetentionDays:
+    Type: Number
+    Default: 7
+    AllowedValues: [1, 3, 5, 7, 14, 30]
+    Description: Retention for every log group the lab creates, to bound cost.
+
+Resources:
+
+  # ------------------------------------------------------------------ storage
+  # Lab data bucket. The attack script reads from this in bulk, which is what
+  # produces the S3 data events that scenario one investigates.
+  LabDataBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${NamePrefix}-lab-data-${AWS::AccountId}-${AWS::Region}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Suspended
+      Tags:
+        - Key: Purpose
+          Value: devops-agent-security-triage-lab
+
+  # Trail destination. Kept separate from the lab bucket so that reading lab
+  # objects does not also rewrite the evidence.
+  TrailBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${NamePrefix}-trail-${AWS::AccountId}-${AWS::Region}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireTrailObjects
+            Status: Enabled
+            ExpirationInDays: 7
+      Tags:
+        - Key: Purpose
+          Value: devops-agent-security-triage-lab
+
+  TrailBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref TrailBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AWSCloudTrailAclCheck
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: s3:GetBucketAcl
+            Resource: !GetAtt TrailBucket.Arn
+            Condition:
+              StringEquals:
+                aws:SourceArn: !Sub 'arn:${AWS::Partition}:cloudtrail:${AWS::Region}:${AWS::AccountId}:trail/${NamePrefix}-trail'
+          - Sid: AWSCloudTrailWrite
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub '${TrailBucket.Arn}/AWSLogs/${AWS::AccountId}/*'
+            Condition:
+              StringEquals:
+                s3:x-amz-acl: bucket-owner-full-control
+                aws:SourceArn: !Sub 'arn:${AWS::Partition}:cloudtrail:${AWS::Region}:${AWS::AccountId}:trail/${NamePrefix}-trail'
+
+  # ------------------------------------------------------------------ trail
+  TrailLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/cloudtrail/${NamePrefix}'
+      RetentionInDays: !Ref LogRetentionDays
+
+  TrailLogsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: WriteToTrailLogGroup
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                # Built explicitly rather than from !GetAtt Arn, because the
+                # log group Arn already ends in ":*" and appending to it
+                # produces a malformed ARN that CloudTrail rejects.
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/cloudtrail/${NamePrefix}:log-stream:*'
+
+  # Delivers to both S3 and CloudWatch Logs. The metric filters read the log
+  # group; the S3 copy is what carries the data events the agent needs to count
+  # object reads, because data events are not available through Event history.
+  LabTrail:
+    Type: AWS::CloudTrail::Trail
+    DependsOn: TrailBucketPolicy
+    Properties:
+      TrailName: !Sub '${NamePrefix}-trail'
+      S3BucketName: !Ref TrailBucket
+      CloudWatchLogsLogGroupArn: !GetAtt TrailLogGroup.Arn
+      CloudWatchLogsRoleArn: !GetAtt TrailLogsRole.Arn
+      IsLogging: true
+      IsMultiRegionTrail: false
+      IncludeGlobalServiceEvents: true
+      EnableLogFileValidation: false
+      AdvancedEventSelectors:
+        - Name: Management events
+          FieldSelectors:
+            - Field: eventCategory
+              Equals: ['Management']
+        - Name: Lab bucket data events
+          FieldSelectors:
+            - Field: eventCategory
+              Equals: ['Data']
+            - Field: resources.type
+              Equals: ['AWS::S3::Object']
+            - Field: resources.ARN
+              StartsWith:
+                - !Sub '${LabDataBucket.Arn}/'
+
+  # ------------------------------------------------------------- demo principal
+  # Deliberately narrow. It can read the lab bucket and enumerate its own IAM
+  # context, which is enough to produce the scenario one trail. It cannot attach
+  # policies, so the privilege escalation attempt is denied and recorded as such.
+  DemoUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: !Sub '${NamePrefix}-demo-user'
+      Policies:
+        - PolicyName: LabReadAndSelfEnumerate
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ReadLabObjects
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt LabDataBucket.Arn
+                  - !Sub '${LabDataBucket.Arn}/*'
+              # iam:ListUsers is an account level operation. IAM does not support
+              # resource level permissions for it, so '*' is the only valid value
+              # and a scanner flagging this cannot be satisfied by scoping.
+              # See the IAM service authorization reference for ListUsers.
+              - Sid: ListUsersForReconnaissance
+                Effect: Allow
+                Action: iam:ListUsers
+                Resource: '*'
+              # Everything else the scenario needs is scoped to the demo user.
+              - Sid: ReadOwnIamContext
+                Effect: Allow
+                Action:
+                  - iam:ListAttachedUserPolicies
+                  - iam:GetUser
+                Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:user/${NamePrefix}-demo-user'
+              - Sid: CreateOwnAccessKey
+                Effect: Allow
+                Action: iam:CreateAccessKey
+                Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:user/${NamePrefix}-demo-user'
+      Tags:
+        - Key: Purpose
+          Value: devops-agent-security-triage-lab
+
+  DemoUserAccessKey:
+    Type: AWS::IAM::AccessKey
+    Properties:
+      UserName: !Ref DemoUser
+
+  # The secret half of the key lives here rather than in a stack output. A stack
+  # output is readable by any principal holding cloudformation:DescribeStacks and
+  # it persists in stack metadata for the life of the stack, which makes it the
+  # wrong place for a credential even in a lab. The access key ID stays an output
+  # because an ID on its own is an identifier, not a secret.
+  #
+  # Whoever runs scenario 1 needs secretsmanager:GetSecretValue on this secret.
+  DemoUserSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${NamePrefix}-demo-user-secret-access-key'
+      Description: >
+        Secret access key for the lab demo user. Scenario 1 reads it from here.
+        Teardown force deletes it, with no recovery window, so the stack can be
+        redeployed immediately afterwards.
+      SecretString: !GetAtt DemoUserAccessKey.SecretAccessKey
+      Tags:
+        - Key: Purpose
+          Value: devops-agent-security-triage-lab
+
+  # ------------------------------------------------------------------ network
+  # No internet gateway and no public IP. The security group scenario still
+  # records the misconfiguration in CloudTrail, and Flow Logs still answer the
+  # question the post asks, without creating a reachable SSH endpoint.
+  LabVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.20.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${NamePrefix}-vpc'
+
+  LabSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref LabVpc
+      CidrBlock: 10.20.1.0/24
+      MapPublicIpOnLaunch: false
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: !Sub '${NamePrefix}-private-subnet'
+
+  # Starts closed. The scenario two script is what opens port 22 to 0.0.0.0/0,
+  # so the change is attributable in CloudTrail to the principal that ran it.
+  LabSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub '${NamePrefix}-demo-sg'
+      GroupDescription: Lab security group. Opened by the scenario two script.
+      VpcId: !Ref LabVpc
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 127.0.0.1/32
+          Description: Egress intentionally pinned to loopback for the lab
+      Tags:
+        - Key: Name
+          Value: !Sub '${NamePrefix}-demo-sg'
+
+  FlowLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/vpc/flowlogs/${NamePrefix}'
+      RetentionInDays: !Ref LogRetentionDays
+
+  FlowLogRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: vpc-flow-logs.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: WriteFlowLogs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogStreams
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/vpc/flowlogs/${NamePrefix}:*'
+
+  LabFlowLog:
+    Type: AWS::EC2::FlowLog
+    Properties:
+      ResourceId: !Ref LabVpc
+      ResourceType: VPC
+      TrafficType: ALL
+      LogDestinationType: cloud-watch-logs
+      LogGroupName: !Ref FlowLogGroup
+      DeliverLogsPermissionArn: !GetAtt FlowLogRole.Arn
+
+  LabInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t3.micro
+      ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}'
+      SubnetId: !Ref LabSubnet
+      SecurityGroupIds:
+        - !Ref LabSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub '${NamePrefix}-demo-instance'
+        - Key: Purpose
+          Value: devops-agent-security-triage-lab
+
+  # -------------------------------------------------------------- payment API
+  PaymentApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${NamePrefix}-payments-api'
+      RetentionInDays: !Ref LogRetentionDays
+
+  PaymentApiRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: WriteOwnLogs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${NamePrefix}-payments-api:*'
+
+  # Rejects every request by design and logs the decision as structured JSON.
+  # The outcome field is what lets scenario three answer whether anything
+  # succeeded, which is the point of the A09:2025 finding in the post.
+  PaymentApiFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: PaymentApiLogGroup
+    Properties:
+      FunctionName: !Sub '${NamePrefix}-payments-api'
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt PaymentApiRole.Arn
+      Timeout: 10
+      MemorySize: 128
+      Code:
+        ZipFile: |
+          import json, re, datetime
+
+          SQLI = re.compile(r"(\bor\b\s+1=1|union\s+select|';|--\s|\bdrop\s+table\b)", re.I)
+          TRAVERSAL = re.compile(r"(\.\./|%2e%2e|/etc/passwd)", re.I)
+
+          def classify(path, query, body):
+              blob = " ".join([path or "", json.dumps(query or {}), body or ""])
+              if SQLI.search(blob):
+                  return "sql_injection_attempt"
+              if TRAVERSAL.search(blob):
+                  return "path_traversal_attempt"
+              return "authentication_failure"
+
+          def handler(event, context):
+              ctx = event.get("requestContext", {})
+              # DELIBERATE LOGGING GAP. Do not "fix" this line.
+              #
+              # This is an HTTP API (API Gateway v2), where the caller address is at
+              # requestContext.http.sourceIp. requestContext.identity.sourceIp is the
+              # REST API (v1) shape, so this lookup always misses and source_ip is
+              # logged as the string "unknown" on every record.
+              #
+              # Scenario 3 depends on that. The field is present and populated on every
+              # line, so the log looks complete, but it can never answer where the
+              # traffic came from. That is the OWASP A09:2025 finding the scenario is built
+              # to produce, and it is a far more common failure in real applications
+              # than a missing field, precisely because it does not look like one.
+              #
+              # To see the gap close instead, change this to:
+              #     ident = ctx.get("http", {})
+              ident = ctx.get("identity", {})
+              path = event.get("path") or ctx.get("path") or "/"
+              query = event.get("queryStringParameters") or {}
+              body = event.get("body") or ""
+              headers = {k.lower(): v for k, v in (event.get("headers") or {}).items()}
+
+              category = classify(path, query, body)
+              username = (query.get("username")
+                          or headers.get("x-demo-username")
+                          or "unknown")
+
+              record = {
+                  "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                  "event": "request_rejected",
+                  "category": category,
+                  "outcome": "denied",
+                  "http_status": 401 if category == "authentication_failure" else 400,
+                  "path": path,
+                  "attempted_username": username,
+                  "source_ip": ident.get("sourceIp", "unknown"),
+                  "user_agent": headers.get("user-agent", "unknown"),
+                  "session_issued": False,
+                  "request_id": context.aws_request_id,
+              }
+              print(json.dumps(record))
+
+              return {
+                  "statusCode": record["http_status"],
+                  "headers": {"Content-Type": "application/json"},
+                  "body": json.dumps({"message": "request rejected"}),
+              }
+
+  PaymentApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub '${NamePrefix}-payments-api'
+      ProtocolType: HTTP
+      Target: !GetAtt PaymentApiFunction.Arn
+
+  PaymentApiInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref PaymentApiFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${PaymentApi}/*'
+
+  # -------------------------------------------------- metric filters and alarms
+  # These are the detection logic the post describes. They are published here so
+  # a reader can reproduce the alarms rather than infer them.
+  CreateAccessKeyFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref TrailLogGroup
+      FilterPattern: !Sub '{ ($.eventName = "CreateAccessKey") && ($.userIdentity.userName = "${NamePrefix}-demo-user") }'
+      MetricTransformations:
+        - MetricNamespace: !Sub '${NamePrefix}/SecurityTriage'
+          MetricName: CreateAccessKeyByDemoUser
+          MetricValue: '1'
+          DefaultValue: 0
+
+  OpenSecurityGroupFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref TrailLogGroup
+      FilterPattern: '{ ($.eventName = "AuthorizeSecurityGroupIngress") && ($.requestParameters.ipPermissions.items[0].ipRanges.items[0].cidrIp = "0.0.0.0/0") }'
+      MetricTransformations:
+        - MetricNamespace: !Sub '${NamePrefix}/SecurityTriage'
+          MetricName: SecurityGroupOpenedToInternet
+          MetricValue: '1'
+          DefaultValue: 0
+
+  # Counts every rejected request, not just authentication failures. The alarm is
+  # meant to say "the rejection rate jumped", leaving the category split for the
+  # investigation to establish. Naming a category here would give away the answer.
+  RejectedRequestFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref PaymentApiLogGroup
+      FilterPattern: '{ $.event = "request_rejected" }'
+      MetricTransformations:
+        - MetricNamespace: !Sub '${NamePrefix}/SecurityTriage'
+          MetricName: PaymentApiRejectedRequests
+          MetricValue: '1'
+          DefaultValue: 0
+
+  CreateAccessKeyAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${NamePrefix}-CreateAccessKey'
+      AlarmDescription: Demo user created an access key, which it has never done before.
+      Namespace: !Sub '${NamePrefix}/SecurityTriage'
+      MetricName: CreateAccessKeyByDemoUser
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
+  OpenSecurityGroupAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${NamePrefix}-SecurityGroupOpened'
+      AlarmDescription: A security group ingress rule was opened to 0.0.0.0/0.
+      Namespace: !Sub '${NamePrefix}/SecurityTriage'
+      MetricName: SecurityGroupOpenedToInternet
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
+  ApiAbuseAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${NamePrefix}-ApiAbuse'
+      AlarmDescription: More than 50 rejected requests against the payment API in five minutes.
+      Namespace: !Sub '${NamePrefix}/SecurityTriage'
+      MetricName: PaymentApiRejectedRequests
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 50
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+Outputs:
+
+  LabDataBucketName:
+    Description: Lab data bucket. Seed it with the script in scripts/seed-lab-data.sh.
+    Value: !Ref LabDataBucket
+
+  TrailBucketName:
+    Description: Trail destination bucket. Grant the agent role read access to this.
+    Value: !Ref TrailBucket
+
+  TrailLogGroupName:
+    Description: CloudTrail log group that the metric filters read.
+    Value: !Ref TrailLogGroup
+
+  PaymentApiEndpoint:
+    Description: Payment API endpoint for the scenario three script.
+    Value: !GetAtt PaymentApi.ApiEndpoint
+
+  PaymentApiLogGroupName:
+    Description: Application log group that scenario three investigates.
+    Value: !Ref PaymentApiLogGroup
+
+  FlowLogGroupName:
+    Description: VPC Flow Logs group that scenario two investigates.
+    Value: !Ref FlowLogGroup
+
+  SecurityGroupId:
+    Description: Security group that the scenario two script opens.
+    Value: !Ref LabSecurityGroup
+
+  InstanceId:
+    Description: Instance the security group is attached to.
+    Value: !Ref LabInstance
+
+  DemoUserName:
+    Description: Scoped demo principal used by the scenario one script.
+    Value: !Ref DemoUser
+
+  DemoAccessKeyId:
+    Description: Access key ID for the demo user. Delete during teardown.
+    Value: !Ref DemoUserAccessKey
+
+  DemoCredentialsSecretArn:
+    Description: >
+      Secrets Manager secret holding the demo user's secret access key. Scenario 1
+      reads the value from here. The secret itself is deliberately not a stack
+      output, because stack outputs are readable by anyone with DescribeStacks.
+    Value: !Ref DemoUserSecret
