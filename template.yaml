@@ -162,6 +162,13 @@ Resources:
   # policies, so the privilege escalation attempt is denied and recorded as such.
   DemoUser:
     Type: AWS::IAM::User
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: F10
+            reason: "Intentional: scoped inline policy for isolated lab user (security investigation scenario 1)"
+          - id: F2000
+            reason: "Intentional: standalone lab user for investigation, not production IAM design"
     Properties:
       UserName: !Sub '${NamePrefix}-demo-user'
       Policies:
