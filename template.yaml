@@ -426,6 +426,26 @@ Resources:
         - Key: Purpose
           Value: devops-agent-security-triage-lab
 
+  # Rotation schedule uses the existing PaymentApiFunction as a no-op rotator.
+  # 90-day schedule never triggers during the lab's hours-long lifetime.
+  SecretRotationSchedule:
+    Type: AWS::SecretsManager::RotationSchedule
+    DependsOn: SecretRotationPermission
+    Properties:
+      SecretId: !Ref DemoUserSecret
+      RotationLambdaARN: !GetAtt PaymentApiFunction.Arn
+      RotationRules:
+        AutomaticallyAfterDays: 90
+
+  SecretRotationPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref PaymentApiFunction
+      Action: lambda:InvokeFunction
+      Principal: secretsmanager.amazonaws.com
+      SourceArn: !Ref DemoUserSecret
+      SourceAccount: !Ref 'AWS::AccountId'
+
   # ------------------------------------------------------------------ network
   # No internet gateway and no public IP. The security group scenario still
   # records the misconfiguration in CloudTrail, and Flow Logs still answer the
