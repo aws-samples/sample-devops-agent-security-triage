@@ -617,16 +617,20 @@ Resources:
             Effect: Allow
             Action: sqs:SendMessage
             Resource: !GetAtt PaymentApiDlq.Arn
-          - Sid: VpcNetworkInterfaces
+          - Sid: VpcNetworkInterfacesMutate
             Effect: Allow
             Action:
               - ec2:CreateNetworkInterface
-              - ec2:DescribeNetworkInterfaces
               - ec2:DeleteNetworkInterface
             Resource: '*'
             Condition:
               StringEquals:
                 ec2:Vpc: !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:vpc/${LabVpc}'
+          - Sid: VpcNetworkInterfacesRead
+            Effect: Allow
+            Action:
+              - ec2:DescribeNetworkInterfaces
+            Resource: '*'
 
   # Rejects every request by design and logs the decision as structured JSON.
   # The outcome field is what lets scenario three answer whether anything
