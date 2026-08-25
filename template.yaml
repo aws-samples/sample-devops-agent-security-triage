@@ -25,7 +25,14 @@ Resources:
   # ------------------------------------------------------------------ storage
   # Lab data bucket. The attack script reads from this in bulk, which is what
   # produces the S3 data events that scenario one investigates.
-  LabDataBucket: # checkov:skip=CKV_AWS_18:Lab bucket — access logging adds an extra bucket and cost for a stack meant to live for an afternoon; checkov:skip=CKV_AWS_21:Intentional — versioning suspended so the scenario can overwrite seed data cleanly
+  LabDataBucket:
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_18
+            comment: Lab bucket — access logging adds an extra bucket and cost for a stack meant to live for an afternoon
+          - id: CKV_AWS_21
+            comment: Intentional — versioning suspended so the scenario can overwrite seed data cleanly
     Type: AWS::S3::Bucket
     Properties:
       BucketName: !Sub '${NamePrefix}-lab-data-${AWS::AccountId}-${AWS::Region}'
@@ -60,11 +67,18 @@ Resources:
               - !Sub '${LabDataBucket.Arn}/*'
             Condition:
               Bool:
-                aws:SecureTransport: 'false'
+                aws:SecureTransport: false
 
   # Trail destination. Kept separate from the lab bucket so that reading lab
   # objects does not also rewrite the evidence.
-  TrailBucket: # checkov:skip=CKV_AWS_18:Trail bucket — access logging adds an extra bucket and cost for a stack meant to live for an afternoon; checkov:skip=CKV_AWS_21:Trail bucket — versioning adds complexity and cost to a teardown lab
+  TrailBucket:
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_18
+            comment: Trail bucket — access logging adds an extra bucket and cost for a stack meant to live for an afternoon
+          - id: CKV_AWS_21
+            comment: Trail bucket — versioning adds complexity and cost to a teardown lab
     Type: AWS::S3::Bucket
     Properties:
       BucketName: !Sub '${NamePrefix}-trail-${AWS::AccountId}-${AWS::Region}'
@@ -102,7 +116,7 @@ Resources:
               - !Sub '${TrailBucket.Arn}/*'
             Condition:
               Bool:
-                aws:SecureTransport: 'false'
+                aws:SecureTransport: false
           - Sid: AWSCloudTrailAclCheck
             Effect: Allow
             Principal:
