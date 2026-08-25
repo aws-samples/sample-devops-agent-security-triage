@@ -50,11 +50,41 @@ if [ -n "${SECRET_ARN:-}" ] && [ "$SECRET_ARN" != "None" ]; then
     || echo "    could not delete, remove it by hand if a redeploy complains"
 fi
 
-# 2. Buckets must be empty before the stack can delete them.
-for b in "$LAB_BUCKET" "$TRAIL_BUCKET"; do
+# 2. Buckets must be empty before the stack can delete them. With versioning
+#    enabled, 'aws s3 rm --recursive' only creates delete markers. We must
+#    delete all object versions and delete markers explicitly.
+empty_versioned_bucket() {
+  local bucket="$1"
+  echo "  emptying s3://$bucket (all versions)"
+  local token=""
+  while true; do
+    if [ -z "$token" ]; then
+      page=$(aws s3api list-object-versions --bucket "$bucket" --region "$REGION" \
+        --output json --max-items 1000 2>/dev/null)
+    else
+      page=$(aws s3api list-object-versions --bucket "$bucket" --region "$REGION" \
+        --output json --max-items 1000 --starting-token "$token" 2>/dev/null)
+    fi
+    # Build delete payload from Versions and DeleteMarkers
+    objects=$(echo "$page" | jq -c '[(.Versions // [])[] | {Key, VersionId}] + [(.DeleteMarkers // [])[] | {Key, VersionId}]')
+    count=$(echo "$objects" | jq 'length')
+    if [ "$count" -gt 0 ]; then
+      echo "$objects" | jq -c '{Objects: ., Quiet: true}' | \
+        aws s3api delete-objects --bucket "$bucket" --region "$REGION" --delete file:///dev/stdin >/dev/null 2>&1
+    fi
+    token=$(echo "$page" | jq -r '.NextToken // empty')
+    [ -z "$token" ] && break
+  done
+}
+
+PREFIX=$(aws cloudformation describe-stacks --stack-name "$STACK" --region "$REGION" \
+  --query "Stacks[0].Parameters[?ParameterKey=='NamePrefix'].ParameterValue" --output text 2>/dev/null)
+PREFIX="${PREFIX:-sectriage}"
+ACCT=$(aws sts get-caller-identity --query Account --output text)
+LOGGING_BUCKET="${PREFIX}-access-logs-${ACCT}-${REGION}"
+for b in "$LAB_BUCKET" "$TRAIL_BUCKET" "$LOGGING_BUCKET"; do
   if [ -n "${b:-}" ] && [ "$b" != "None" ]; then
-    echo "  emptying s3://$b"
-    aws s3 rm "s3://$b" --recursive --region "$REGION" --only-show-errors || true
+    empty_versioned_bucket "$b"
   fi
 done
 
