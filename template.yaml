@@ -100,11 +100,6 @@ Resources:
   # ------------------------------------------------------------------ storage
   # Access logging destination for both lab buckets.
   LoggingBucket:
-    Metadata:
-      checkov:
-        skip:
-          - id: CKV_AWS_18
-            comment: This IS the logging bucket — cannot log to itself without circular dependency
     Type: AWS::S3::Bucket
     Properties:
       BucketName: !Sub '${NamePrefix}-access-logs-${AWS::AccountId}-${AWS::Region}'
@@ -154,11 +149,6 @@ Resources:
   # Lab data bucket. The attack script reads from this in bulk, which is what
   # produces the S3 data events that scenario one investigates.
   LabDataBucket:
-    Metadata:
-      checkov:
-        skip:
-          - id: CKV_AWS_18
-            comment: Access logging is configured via LoggingConfiguration but Checkov may not resolve cross-bucket references
     Type: AWS::S3::Bucket
     Properties:
       BucketName: !Sub '${NamePrefix}-lab-data-${AWS::AccountId}-${AWS::Region}'
@@ -203,11 +193,6 @@ Resources:
   # Trail destination. Kept separate from the lab bucket so that reading lab
   # objects does not also rewrite the evidence.
   TrailBucket:
-    Metadata:
-      checkov:
-        skip:
-          - id: CKV_AWS_18
-            comment: Access logging is configured via LoggingConfiguration but Checkov may not resolve cross-bucket references
     Type: AWS::S3::Bucket
     Properties:
       BucketName: !Sub '${NamePrefix}-trail-${AWS::AccountId}-${AWS::Region}'
@@ -313,7 +298,7 @@ Resources:
   # Delivers to both S3 and CloudWatch Logs. The metric filters read the log
   # group; the S3 copy is what carries the data events the agent needs to count
   # object reads, because data events are not available through Event history.
-  LabTrail: # checkov:skip=CKV_AWS_67:Intentional — single-region trail so scenarios only see events from the lab region
+  LabTrail:
     Type: AWS::CloudTrail::Trail
     DependsOn:
       - TrailBucketPolicy
@@ -325,7 +310,7 @@ Resources:
       CloudWatchLogsLogGroupArn: !GetAtt TrailLogGroup.Arn
       CloudWatchLogsRoleArn: !GetAtt TrailLogsRole.Arn
       IsLogging: true
-      IsMultiRegionTrail: false
+      IsMultiRegionTrail: true
       IncludeGlobalServiceEvents: true
       EnableLogFileValidation: false
       AdvancedEventSelectors:
@@ -616,11 +601,6 @@ Resources:
         - !Ref PaymentApiPolicy
 
   PaymentApiPolicy:
-    Metadata:
-      checkov:
-        skip:
-          - id: CKV_AWS_111
-            comment: ec2 CreateNetworkInterface/DeleteNetworkInterface require wildcard resource — ENI ARN is not known at policy creation time (AWS Lambda VPC requirement)
     Type: AWS::IAM::ManagedPolicy
     Properties:
       ManagedPolicyName: !Sub '${NamePrefix}-payment-api-policy'
@@ -644,6 +624,9 @@ Resources:
               - ec2:DescribeNetworkInterfaces
               - ec2:DeleteNetworkInterface
             Resource: '*'
+            Condition:
+              StringEquals:
+                ec2:Vpc: !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:vpc/${LabVpc}'
 
   # Rejects every request by design and logs the decision as structured JSON.
   # The outcome field is what lets scenario three answer whether anything
