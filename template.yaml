@@ -25,7 +25,7 @@ Resources:
   # ------------------------------------------------------------------ storage
   # Lab data bucket. The attack script reads from this in bulk, which is what
   # produces the S3 data events that scenario one investigates.
-  LabDataBucket:
+  LabDataBucket: # checkov:skip=CKV_AWS_18:Lab bucket — access logging adds an extra bucket and cost for a stack meant to live for an afternoon; checkov:skip=CKV_AWS_21:Intentional — versioning suspended so the scenario can overwrite seed data cleanly
     Type: AWS::S3::Bucket
     Properties:
       BucketName: !Sub '${NamePrefix}-lab-data-${AWS::AccountId}-${AWS::Region}'
@@ -44,9 +44,27 @@ Resources:
         - Key: Purpose
           Value: devops-agent-security-triage-lab
 
+  LabDataBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref LabDataBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt LabDataBucket.Arn
+              - !Sub '${LabDataBucket.Arn}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+
   # Trail destination. Kept separate from the lab bucket so that reading lab
   # objects does not also rewrite the evidence.
-  TrailBucket:
+  TrailBucket: # checkov:skip=CKV_AWS_18:Trail bucket — access logging adds an extra bucket and cost for a stack meant to live for an afternoon; checkov:skip=CKV_AWS_21:Trail bucket — versioning adds complexity and cost to a teardown lab
     Type: AWS::S3::Bucket
     Properties:
       BucketName: !Sub '${NamePrefix}-trail-${AWS::AccountId}-${AWS::Region}'
@@ -75,6 +93,16 @@ Resources:
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt TrailBucket.Arn
+              - !Sub '${TrailBucket.Arn}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
           - Sid: AWSCloudTrailAclCheck
             Effect: Allow
             Principal:
@@ -129,7 +157,7 @@ Resources:
   # Delivers to both S3 and CloudWatch Logs. The metric filters read the log
   # group; the S3 copy is what carries the data events the agent needs to count
   # object reads, because data events are not available through Event history.
-  LabTrail:
+  LabTrail: # checkov:skip=CKV_AWS_67:Intentional — single-region trail so scenarios only see events from the lab region
     Type: AWS::CloudTrail::Trail
     DependsOn: TrailBucketPolicy
     Properties:
@@ -219,7 +247,7 @@ Resources:
   # because an ID on its own is an identifier, not a secret.
   #
   # Whoever runs scenario 1 needs secretsmanager:GetSecretValue on this secret.
-  DemoUserSecret:
+  DemoUserSecret: # checkov:skip=CKV_AWS_149:Lab secret — CMK adds cost; default encryption is sufficient for a teardown lab
     Type: AWS::SecretsManager::Secret
     Properties:
       Name: !Sub '${NamePrefix}-demo-user-secret-access-key'
@@ -315,6 +343,7 @@ Resources:
     Type: AWS::EC2::Instance
     Properties:
       InstanceType: t3.micro
+      EbsOptimized: true
       ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}'
       SubnetId: !Ref LabSubnet
       SecurityGroupIds:
