@@ -98,3 +98,109 @@ For completeness, the checks that a scanner might be expected to raise and does 
 set `BucketEncryption` with AES256, `PublicAccessBlockConfiguration` with all four blocks, and the lab
 bucket sets `VersioningConfiguration`. Log retention is bounded by the `LogRetentionDays` parameter,
 default 7.
+
+## cfn-guard rules — suppressed by design
+
+The following cfn-guard rules fire against this template. None are actionable for a lab stack.
+
+### CLOUD_TRAIL_ENCRYPTION_ENABLED (KMSKeyId missing on LabTrail)
+
+A CMK for trail encryption adds a KMS key resource, a key policy, and ongoing cost. The trail delivers
+to a bucket encrypted at rest with AES256 and to a CloudWatch Logs group. For an afternoon lab whose
+evidence is deleted by `teardown.sh`, the default encryption is sufficient.
+
+### CLOUDWATCH_ALARM_ACTION_CHECK (AlarmActions, OKActions, InsufficientDataActions missing)
+
+The three alarms exist so the DevOps Agent can discover and read them during investigation, not so
+they page anyone. Adding SNS topics and subscriptions would triple the resource count for no lab
+benefit. The alarms are detection artefacts, not operational alerting.
+
+### CLOUDWATCH_LOG_GROUP_ENCRYPTED (KmsKeyId missing on log groups)
+
+Same rationale as trail encryption. CMK adds cost and a key resource for logs that live seven days
+maximum and are deleted with the stack.
+
+### CW_LOGGROUP_RETENTION_PERIOD_CHECK (RetentionInDays not a literal)
+
+False positive. The template uses `!Ref LogRetentionDays`, a parameter with
+`AllowedValues: [1, 3, 5, 7, 14, 30]`. cfn-guard cannot resolve the Ref at static analysis time but
+the parameter constraint ensures only valid values are used.
+
+### EBS_OPTIMIZED_INSTANCE
+
+Fixed — `EbsOptimized: true` added. t3.micro is EBS-optimised by default but the explicit property
+silences the rule.
+
+### IAM_NO_INLINE_POLICY_CHECK (inline policies on FlowLogRole, TrailLogsRole, PaymentApiRole)
+
+Every role uses a single scoped inline policy rather than a managed policy, because the lab is
+self-contained in one template and the policies are not reused. Converting to managed policies adds
+three resources and achieves nothing for a stack deleted after use.
+
+### IAM_USER_LOGIN_PROFILE_USES_SECURE_PARAMETER
+
+The DemoUser has no LoginProfile. The rule fires because it expects one when it sees an IAM user. The
+user authenticates only via access keys, never via the console.
+
+### IAM_USER_NO_POLICIES_CHECK (inline policy on DemoUser)
+
+Intentional. The demo user is an isolated lab principal, not a production identity. Managed policies
+and groups add indirection that has no value for a disposable, single-purpose user whose permissions
+are scoped to the lab bucket and its own IAM context.
+
+### LAMBDA_CONCURRENCY_CHECK (ReservedConcurrentExecutions missing)
+
+Lab Lambda. No production traffic. Reserved concurrency is unnecessary and would add cost if it
+reserved capacity that goes unused.
+
+### LAMBDA_DLQ_CHECK (DeadLetterConfig missing)
+
+The function is synchronous behind API Gateway. It returns its response directly to the caller. A DLQ
+serves no purpose for synchronous invocations.
+
+### LAMBDA_INSIDE_VPC (VpcConfig missing)
+
+The function has no backend dependencies — no database, no internal API, no private resource. Putting
+it in a VPC adds ENI cold start latency, requires NAT for internet access, and solves no security
+requirement.
+
+### S3_BUCKET_DEFAULT_LOCK_ENABLED (ObjectLockEnabled missing)
+
+Object Lock requires versioning enabled, prevents object deletion during the retention period, and
+makes `teardown.sh` unable to empty and delete the bucket. Incompatible with a lab designed for rapid
+deploy/teardown.
+
+### S3_BUCKET_LOGGING_ENABLED
+
+Suppressed via Checkov inline. Access logging requires a destination bucket, which adds a resource, a
+policy, and cost for a stack that lives hours.
+
+### S3_BUCKET_NO_PUBLIC_RW_ACL (AccessControl property missing)
+
+Both buckets have `PublicAccessBlockConfiguration` with all four blocks set to `true`, which is the
+recommended approach and supersedes ACLs. The missing `AccessControl` property means "private" by
+default. cfn-guard flags the absence but the effective state is already private.
+
+### S3_BUCKET_SSL_REQUESTS_ONLY
+
+Fixed — both bucket policies now include a `DenyInsecureTransport` statement.
+
+### S3_BUCKET_VERSIONING_ENABLED
+
+LabDataBucket: versioning is `Suspended` intentionally so the scenario scripts can overwrite seed
+data cleanly without accumulating versions.
+
+TrailBucket: versioning is omitted. CloudTrail writes are append-only by key pattern and the bucket
+expires all objects after seven days. Versioning would retain expired versions indefinitely unless
+lifecycle rules are extended.
+
+### SECRETSMANAGER_ROTATION_ENABLED_CHECK
+
+The secret holds an IAM access key created by the stack. Rotation would require a Lambda rotator,
+custom logic to recreate and redistribute the key, and serves no purpose for a key that lives until
+teardown deletes it.
+
+### SECRETSMANAGER_USING_CMK (KmsKeyId missing)
+
+Suppressed via Checkov inline. Same rationale as trail encryption: the default `aws/secretsmanager`
+key is sufficient for a lab secret that lives hours.
