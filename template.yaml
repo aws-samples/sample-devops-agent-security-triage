@@ -22,20 +22,72 @@ Parameters:
 
 Resources:
 
+  # ----------------------------------------------------------------- encryption
+  LabKmsKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: !Sub '${NamePrefix} lab encryption key for CloudTrail, CloudWatch Logs, and Secrets Manager'
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: RootAccess
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:root'
+            Action: 'kms:*'
+            Resource: '*'
+          - Sid: CloudTrailEncrypt
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action:
+              - kms:GenerateDataKey*
+              - kms:DescribeKey
+            Resource: '*'
+            Condition:
+              StringEquals:
+                aws:SourceArn: !Sub 'arn:${AWS::Partition}:cloudtrail:${AWS::Region}:${AWS::AccountId}:trail/${NamePrefix}-trail'
+          - Sid: CloudWatchLogsEncrypt
+            Effect: Allow
+            Principal:
+              Service: !Sub 'logs.${AWS::Region}.amazonaws.com'
+            Action:
+              - kms:Encrypt*
+              - kms:Decrypt*
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:Describe*
+            Resource: '*'
+            Condition:
+              ArnLike:
+                kms:EncryptionContext:aws:logs:arn: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
+      Tags:
+        - Key: Purpose
+          Value: devops-agent-security-triage-lab
+
+  LabKmsKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub 'alias/${NamePrefix}-lab-key'
+      TargetKeyId: !Ref LabKmsKey
+
+  # ---------------------------------------------------------------- notifications
+  LabAlarmTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${NamePrefix}-alarm-notifications'
+      Tags:
+        - Key: Purpose
+          Value: devops-agent-security-triage-lab
+
   # ------------------------------------------------------------------ storage
-  # Lab data bucket. The attack script reads from this in bulk, which is what
-  # produces the S3 data events that scenario one investigates.
-  LabDataBucket:
-    Metadata:
-      checkov:
-        skip:
-          - id: CKV_AWS_18
-            comment: Lab bucket — access logging adds an extra bucket and cost for a stack meant to live for an afternoon
-          - id: CKV_AWS_21
-            comment: Intentional — versioning suspended so the scenario can overwrite seed data cleanly
+  # Access logging destination for both lab buckets.
+  LoggingBucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Sub '${NamePrefix}-lab-data-${AWS::AccountId}-${AWS::Region}'
+      BucketName: !Sub '${NamePrefix}-access-logs-${AWS::AccountId}-${AWS::Region}'
+      AccessControl: LogDeliveryWrite
       BucketEncryption:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
@@ -46,7 +98,60 @@ Resources:
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
       VersioningConfiguration:
-        Status: Suspended
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireAccessLogs
+            Status: Enabled
+            ExpirationInDays: 7
+      Tags:
+        - Key: Purpose
+          Value: devops-agent-security-triage-lab
+
+  LoggingBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref LoggingBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt LoggingBucket.Arn
+              - !Sub '${LoggingBucket.Arn}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: false
+
+  # Lab data bucket. The attack script reads from this in bulk, which is what
+  # produces the S3 data events that scenario one investigates.
+  LabDataBucket:
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_18
+            comment: Access logging is configured via LoggingConfiguration but Checkov may not resolve cross-bucket references
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${NamePrefix}-lab-data-${AWS::AccountId}-${AWS::Region}'
+      AccessControl: Private
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      LoggingConfiguration:
+        DestinationBucketName: !Ref LoggingBucket
+        LogFilePrefix: lab-data/
       Tags:
         - Key: Purpose
           Value: devops-agent-security-triage-lab
@@ -76,12 +181,11 @@ Resources:
       checkov:
         skip:
           - id: CKV_AWS_18
-            comment: Trail bucket — access logging adds an extra bucket and cost for a stack meant to live for an afternoon
-          - id: CKV_AWS_21
-            comment: Trail bucket — versioning adds complexity and cost to a teardown lab
+            comment: Access logging is configured via LoggingConfiguration but Checkov may not resolve cross-bucket references
     Type: AWS::S3::Bucket
     Properties:
       BucketName: !Sub '${NamePrefix}-trail-${AWS::AccountId}-${AWS::Region}'
+      AccessControl: Private
       BucketEncryption:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
@@ -91,6 +195,11 @@ Resources:
         BlockPublicPolicy: true
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      LoggingConfiguration:
+        DestinationBucketName: !Ref LoggingBucket
+        LogFilePrefix: trail/
       LifecycleConfiguration:
         Rules:
           - Id: ExpireTrailObjects
@@ -142,7 +251,8 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub '/aws/cloudtrail/${NamePrefix}'
-      RetentionInDays: !Ref LogRetentionDays
+      RetentionInDays: 7
+      KmsKeyId: !GetAtt LabKmsKey.Arn
 
   TrailLogsRole:
     Type: AWS::IAM::Role
@@ -154,19 +264,24 @@ Resources:
             Principal:
               Service: cloudtrail.amazonaws.com
             Action: sts:AssumeRole
-      Policies:
-        - PolicyName: WriteToTrailLogGroup
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - logs:CreateLogStream
-                  - logs:PutLogEvents
-                # Built explicitly rather than from !GetAtt Arn, because the
-                # log group Arn already ends in ":*" and appending to it
-                # produces a malformed ARN that CloudTrail rejects.
-                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/cloudtrail/${NamePrefix}:log-stream:*'
+      ManagedPolicyArns:
+        - !Ref TrailLogsPolicy
+
+  TrailLogsPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub '${NamePrefix}-trail-logs-policy'
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            # Built explicitly rather than from !GetAtt Arn, because the
+            # log group Arn already ends in ":*" and appending to it
+            # produces a malformed ARN that CloudTrail rejects.
+            Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/cloudtrail/${NamePrefix}:log-stream:*'
 
   # Delivers to both S3 and CloudWatch Logs. The metric filters read the log
   # group; the S3 copy is what carries the data events the agent needs to count
@@ -177,6 +292,7 @@ Resources:
     Properties:
       TrailName: !Sub '${NamePrefix}-trail'
       S3BucketName: !Ref TrailBucket
+      KMSKeyId: !GetAtt LabKmsKey.Arn
       CloudWatchLogsLogGroupArn: !GetAtt TrailLogGroup.Arn
       CloudWatchLogsRoleArn: !GetAtt TrailLogsRole.Arn
       IsLogging: true
@@ -213,41 +329,46 @@ Resources:
             reason: "Intentional: standalone lab user for investigation, not production IAM design"
     Properties:
       UserName: !Sub '${NamePrefix}-demo-user'
-      Policies:
-        - PolicyName: LabReadAndSelfEnumerate
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Sid: ReadLabObjects
-                Effect: Allow
-                Action:
-                  - s3:GetObject
-                  - s3:ListBucket
-                Resource:
-                  - !GetAtt LabDataBucket.Arn
-                  - !Sub '${LabDataBucket.Arn}/*'
-              # iam:ListUsers is an account level operation. IAM does not support
-              # resource level permissions for it, so '*' is the only valid value
-              # and a scanner flagging this cannot be satisfied by scoping.
-              # See the IAM service authorization reference for ListUsers.
-              - Sid: ListUsersForReconnaissance
-                Effect: Allow
-                Action: iam:ListUsers
-                Resource: '*'
-              # Everything else the scenario needs is scoped to the demo user.
-              - Sid: ReadOwnIamContext
-                Effect: Allow
-                Action:
-                  - iam:ListAttachedUserPolicies
-                  - iam:GetUser
-                Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:user/${NamePrefix}-demo-user'
-              - Sid: CreateOwnAccessKey
-                Effect: Allow
-                Action: iam:CreateAccessKey
-                Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:user/${NamePrefix}-demo-user'
+      ManagedPolicyArns:
+        - !Ref DemoUserPolicy
       Tags:
         - Key: Purpose
           Value: devops-agent-security-triage-lab
+
+  DemoUserPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub '${NamePrefix}-demo-user-policy'
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: ReadLabObjects
+            Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:ListBucket
+            Resource:
+              - !GetAtt LabDataBucket.Arn
+              - !Sub '${LabDataBucket.Arn}/*'
+          # iam:ListUsers is an account level operation. IAM does not support
+          # resource level permissions for it, so '*' is the only valid value
+          # and a scanner flagging this cannot be satisfied by scoping.
+          # See the IAM service authorization reference for ListUsers.
+          - Sid: ListUsersForReconnaissance
+            Effect: Allow
+            Action: iam:ListUsers
+            Resource: '*'
+          # Everything else the scenario needs is scoped to the demo user.
+          - Sid: ReadOwnIamContext
+            Effect: Allow
+            Action:
+              - iam:ListAttachedUserPolicies
+              - iam:GetUser
+            Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:user/${NamePrefix}-demo-user'
+          - Sid: CreateOwnAccessKey
+            Effect: Allow
+            Action: iam:CreateAccessKey
+            Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:user/${NamePrefix}-demo-user'
 
   DemoUserAccessKey:
     Type: AWS::IAM::AccessKey
@@ -261,7 +382,7 @@ Resources:
   # because an ID on its own is an identifier, not a secret.
   #
   # Whoever runs scenario 1 needs secretsmanager:GetSecretValue on this secret.
-  DemoUserSecret: # checkov:skip=CKV_AWS_149:Lab secret — CMK adds cost; default encryption is sufficient for a teardown lab
+  DemoUserSecret:
     Type: AWS::SecretsManager::Secret
     Properties:
       Name: !Sub '${NamePrefix}-demo-user-secret-access-key'
@@ -269,6 +390,7 @@ Resources:
         Secret access key for the lab demo user. Scenario 1 reads it from here.
         Teardown force deletes it, with no recovery window, so the stack can be
         redeployed immediately afterwards.
+      KmsKeyId: !Ref LabKmsKey
       SecretString: !GetAtt DemoUserAccessKey.SecretAccessKey
       Tags:
         - Key: Purpose
@@ -315,11 +437,48 @@ Resources:
         - Key: Name
           Value: !Sub '${NamePrefix}-demo-sg'
 
+  # Security group for VPC endpoints and Lambda ENIs — allows HTTPS inbound.
+  VpcEndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub '${NamePrefix}-vpce-sg'
+      GroupDescription: Allows HTTPS from the VPC CIDR for VPC endpoints.
+      VpcId: !Ref LabVpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 10.20.0.0/16
+          Description: HTTPS from VPC CIDR
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 10.20.0.0/16
+          Description: HTTPS to VPC CIDR
+      Tags:
+        - Key: Purpose
+          Value: devops-agent-security-triage-lab
+
+  # VPC Endpoint for CloudWatch Logs so the Lambda can write logs from the VPC.
+  LogsVpcEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref LabVpc
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.logs'
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref LabSubnet
+      SecurityGroupIds:
+        - !Ref VpcEndpointSecurityGroup
+
   FlowLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub '/aws/vpc/flowlogs/${NamePrefix}'
-      RetentionInDays: !Ref LogRetentionDays
+      RetentionInDays: 7
+      KmsKeyId: !GetAtt LabKmsKey.Arn
 
   FlowLogRole:
     Type: AWS::IAM::Role
@@ -331,17 +490,22 @@ Resources:
             Principal:
               Service: vpc-flow-logs.amazonaws.com
             Action: sts:AssumeRole
-      Policies:
-        - PolicyName: WriteFlowLogs
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - logs:CreateLogStream
-                  - logs:PutLogEvents
-                  - logs:DescribeLogStreams
-                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/vpc/flowlogs/${NamePrefix}:*'
+      ManagedPolicyArns:
+        - !Ref FlowLogPolicy
+
+  FlowLogPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub '${NamePrefix}-flow-log-policy'
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+              - logs:DescribeLogStreams
+            Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/vpc/flowlogs/${NamePrefix}:*'
 
   LabFlowLog:
     Type: AWS::EC2::FlowLog
@@ -373,7 +537,17 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub '/aws/lambda/${NamePrefix}-payments-api'
-      RetentionInDays: !Ref LogRetentionDays
+      RetentionInDays: 7
+      KmsKeyId: !GetAtt LabKmsKey.Arn
+
+  PaymentApiDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${NamePrefix}-payments-api-dlq'
+      MessageRetentionPeriod: 86400
+      Tags:
+        - Key: Purpose
+          Value: devops-agent-security-triage-lab
 
   PaymentApiRole:
     Type: AWS::IAM::Role
@@ -385,16 +559,33 @@ Resources:
             Principal:
               Service: lambda.amazonaws.com
             Action: sts:AssumeRole
-      Policies:
-        - PolicyName: WriteOwnLogs
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - logs:CreateLogStream
-                  - logs:PutLogEvents
-                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${NamePrefix}-payments-api:*'
+      ManagedPolicyArns:
+        - !Ref PaymentApiPolicy
+
+  PaymentApiPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub '${NamePrefix}-payment-api-policy'
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: WriteLogs
+            Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${NamePrefix}-payments-api:*'
+          - Sid: SendToDlq
+            Effect: Allow
+            Action: sqs:SendMessage
+            Resource: !GetAtt PaymentApiDlq.Arn
+          - Sid: VpcNetworkInterfaces
+            Effect: Allow
+            Action:
+              - ec2:CreateNetworkInterface
+              - ec2:DescribeNetworkInterfaces
+              - ec2:DeleteNetworkInterface
+            Resource: '*'
 
   # Rejects every request by design and logs the decision as structured JSON.
   # The outcome field is what lets scenario three answer whether anything
@@ -409,6 +600,14 @@ Resources:
       Role: !GetAtt PaymentApiRole.Arn
       Timeout: 10
       MemorySize: 128
+      ReservedConcurrentExecutions: 10
+      DeadLetterConfig:
+        TargetArn: !GetAtt PaymentApiDlq.Arn
+      VpcConfig:
+        SubnetIds:
+          - !Ref LabSubnet
+        SecurityGroupIds:
+          - !Ref VpcEndpointSecurityGroup
       Code:
         ZipFile: |
           import json, re, datetime
@@ -540,6 +739,12 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref LabAlarmTopic
+      OKActions:
+        - !Ref LabAlarmTopic
+      InsufficientDataActions:
+        - !Ref LabAlarmTopic
 
   OpenSecurityGroupAlarm:
     Type: AWS::CloudWatch::Alarm
@@ -554,6 +759,12 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref LabAlarmTopic
+      OKActions:
+        - !Ref LabAlarmTopic
+      InsufficientDataActions:
+        - !Ref LabAlarmTopic
 
   ApiAbuseAlarm:
     Type: AWS::CloudWatch::Alarm
@@ -568,6 +779,12 @@ Resources:
       Threshold: 50
       ComparisonOperator: GreaterThanThreshold
       TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref LabAlarmTopic
+      OKActions:
+        - !Ref LabAlarmTopic
+      InsufficientDataActions:
+        - !Ref LabAlarmTopic
 
 Outputs:
 
