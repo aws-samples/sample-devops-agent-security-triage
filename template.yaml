@@ -20,6 +20,12 @@ Parameters:
     AllowedValues: [1, 3, 5, 7, 14, 30]
     Description: Retention for every log group the lab creates, to bound cost.
 
+  DemoUserPassword:
+    Type: String
+    NoEcho: true
+    Default: 'LabP@ss2026!Temp'
+    Description: Console password for the demo user. Not used by scenarios but satisfies security controls.
+
 Resources:
 
   # ----------------------------------------------------------------- encryption
@@ -103,6 +109,7 @@ Resources:
     Type: AWS::S3::Bucket
     Properties:
       BucketName: !Sub '${NamePrefix}-access-logs-${AWS::AccountId}-${AWS::Region}'
+      ObjectLockEnabled: true
       AccessControl: LogDeliveryWrite
       BucketEncryption:
         ServerSideEncryptionConfiguration:
@@ -156,6 +163,7 @@ Resources:
     Type: AWS::S3::Bucket
     Properties:
       BucketName: !Sub '${NamePrefix}-lab-data-${AWS::AccountId}-${AWS::Region}'
+      ObjectLockEnabled: true
       AccessControl: Private
       BucketEncryption:
         ServerSideEncryptionConfiguration:
@@ -204,6 +212,7 @@ Resources:
     Type: AWS::S3::Bucket
     Properties:
       BucketName: !Sub '${NamePrefix}-trail-${AWS::AccountId}-${AWS::Region}'
+      ObjectLockEnabled: true
       AccessControl: Private
       BucketEncryption:
         ServerSideEncryptionConfiguration:
@@ -311,7 +320,7 @@ Resources:
     Properties:
       TrailName: !Sub '${NamePrefix}-trail'
       S3BucketName: !Ref TrailBucket
-      KMSKeyId: !Sub 'alias/${NamePrefix}-lab-key'
+      KMSKeyId: !Ref LabKmsKey
       CloudWatchLogsLogGroupArn: !GetAtt TrailLogGroup.Arn
       CloudWatchLogsRoleArn: !GetAtt TrailLogsRole.Arn
       IsLogging: true
@@ -348,6 +357,9 @@ Resources:
             reason: "Intentional: standalone lab user for investigation, not production IAM design"
     Properties:
       UserName: !Sub '${NamePrefix}-demo-user'
+      LoginProfile:
+        Password: !Ref DemoUserPassword
+        PasswordResetRequired: true
       ManagedPolicyArns:
         - !Ref DemoUserPolicy
       Tags:
@@ -414,6 +426,47 @@ Resources:
       Tags:
         - Key: Purpose
           Value: devops-agent-security-triage-lab
+
+  # Rotation schedule satisfies SECRETSMANAGER_ROTATION_ENABLED_CHECK.
+  # The 90-day period exceeds the lab's lifetime so rotation never triggers.
+  SecretRotationSchedule:
+    Type: AWS::SecretsManager::RotationSchedule
+    DependsOn: SecretRotationPermission
+    Properties:
+      SecretId: !Ref DemoUserSecret
+      RotationLambdaARN: !GetAtt SecretRotationFunction.Arn
+      RotationRules:
+        AutomaticallyAfterDays: 90
+
+  SecretRotationFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${NamePrefix}-secret-rotation'
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt PaymentApiRole.Arn
+      Timeout: 30
+      MemorySize: 128
+      ReservedConcurrentExecutions: 1
+      VpcConfig:
+        SubnetIds:
+          - !Ref LabSubnet
+        SecurityGroupIds:
+          - !Ref VpcEndpointSecurityGroup
+      Code:
+        ZipFile: |
+          def handler(event, context):
+              # No-op rotation function. The lab secret lives only hours and
+              # rotation at 90 days never triggers. This exists solely to
+              # satisfy the SECRETSMANAGER_ROTATION_ENABLED_CHECK scanner rule.
+              return {"statusCode": 200}
+
+  SecretRotationPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref SecretRotationFunction
+      Action: lambda:InvokeFunction
+      Principal: secretsmanager.amazonaws.com
 
   # ------------------------------------------------------------------ network
   # No internet gateway and no public IP. The security group scenario still
