@@ -720,7 +720,7 @@ Resources:
     Properties:
       FunctionName: !Ref PaymentApiFunction
       Action: lambda:InvokeFunction
-      Principal: !Ref 'AWS::AccountId'
+      Principal: apigateway.amazonaws.com
       SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${PaymentApi}/*'
       SourceAccount: !Ref 'AWS::AccountId'
 
