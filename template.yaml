@@ -62,6 +62,16 @@ Resources:
             Condition:
               ArnLike:
                 kms:EncryptionContext:aws:logs:arn: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
+          - Sid: SnsAndSqsEncrypt
+            Effect: Allow
+            Principal:
+              Service:
+                - sns.amazonaws.com
+                - sqs.amazonaws.com
+            Action:
+              - kms:GenerateDataKey*
+              - kms:Decrypt
+            Resource: '*'
       Tags:
         - Key: Purpose
           Value: devops-agent-security-triage-lab
@@ -77,6 +87,7 @@ Resources:
     Type: AWS::SNS::Topic
     Properties:
       TopicName: !Sub '${NamePrefix}-alarm-notifications'
+      KmsMasterKeyId: !Ref LabKmsKey
       Tags:
         - Key: Purpose
           Value: devops-agent-security-triage-lab
@@ -84,6 +95,11 @@ Resources:
   # ------------------------------------------------------------------ storage
   # Access logging destination for both lab buckets.
   LoggingBucket:
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_18
+            comment: This IS the logging bucket — cannot log to itself without circular dependency
     Type: AWS::S3::Bucket
     Properties:
       BucketName: !Sub '${NamePrefix}-access-logs-${AWS::AccountId}-${AWS::Region}'
@@ -99,6 +115,9 @@ Resources:
         RestrictPublicBuckets: true
       VersioningConfiguration:
         Status: Enabled
+      LoggingConfiguration:
+        DestinationBucketName: !Sub '${NamePrefix}-access-logs-${AWS::AccountId}-${AWS::Region}'
+        LogFilePrefix: self/
       LifecycleConfiguration:
         Rules:
           - Id: ExpireAccessLogs
@@ -292,7 +311,7 @@ Resources:
     Properties:
       TrailName: !Sub '${NamePrefix}-trail'
       S3BucketName: !Ref TrailBucket
-      KMSKeyId: !GetAtt LabKmsKey.Arn
+      KMSKeyId: !Sub 'alias/${NamePrefix}-lab-key'
       CloudWatchLogsLogGroupArn: !GetAtt TrailLogGroup.Arn
       CloudWatchLogsRoleArn: !GetAtt TrailLogsRole.Arn
       IsLogging: true
@@ -544,6 +563,7 @@ Resources:
     Type: AWS::SQS::Queue
     Properties:
       QueueName: !Sub '${NamePrefix}-payments-api-dlq'
+      KmsMasterKeyId: !Ref LabKmsKey
       MessageRetentionPeriod: 86400
       Tags:
         - Key: Purpose
@@ -563,6 +583,11 @@ Resources:
         - !Ref PaymentApiPolicy
 
   PaymentApiPolicy:
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_111
+            comment: ec2 CreateNetworkInterface/DeleteNetworkInterface require wildcard resource — ENI ARN is not known at policy creation time (AWS Lambda VPC requirement)
     Type: AWS::IAM::ManagedPolicy
     Properties:
       ManagedPolicyName: !Sub '${NamePrefix}-payment-api-policy'
