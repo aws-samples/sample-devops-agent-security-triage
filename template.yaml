@@ -315,11 +315,13 @@ Resources:
   # object reads, because data events are not available through Event history.
   LabTrail: # checkov:skip=CKV_AWS_67:Intentional — single-region trail so scenarios only see events from the lab region
     Type: AWS::CloudTrail::Trail
-    DependsOn: TrailBucketPolicy
+    DependsOn:
+      - TrailBucketPolicy
+      - LabKmsKeyAlias
     Properties:
       TrailName: !Sub '${NamePrefix}-trail'
       S3BucketName: !Ref TrailBucket
-      KMSKeyId: !Ref LabKmsKey
+      KMSKeyId: 'alias/sectriage-lab-key'
       CloudWatchLogsLogGroupArn: !GetAtt TrailLogGroup.Arn
       CloudWatchLogsRoleArn: !GetAtt TrailLogsRole.Arn
       IsLogging: true
