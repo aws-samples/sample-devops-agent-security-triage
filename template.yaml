@@ -312,7 +312,7 @@ Resources:
       IsLogging: true
       IsMultiRegionTrail: true
       IncludeGlobalServiceEvents: true
-      EnableLogFileValidation: false
+      EnableLogFileValidation: true
       AdvancedEventSelectors:
         - Name: Management events
           FieldSelectors:
