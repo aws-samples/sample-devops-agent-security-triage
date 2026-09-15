@@ -40,7 +40,7 @@ aws cloudformation deploy \
   --template-file template.yaml \
   --stack-name devops-agent-security-triage \
   --capabilities CAPABILITY_NAMED_IAM \
-  --parameter-overrides NamePrefix=sectriage LogRetentionDays=7
+  --parameter-overrides DemoUserPassword=<choose-a-strong-password> NamePrefix=sectriage LogRetentionDays=7
 
 ./scripts/seed-lab-data.sh
 ```
