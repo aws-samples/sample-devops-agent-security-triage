@@ -43,5 +43,5 @@ aws ec2 describe-security-groups --group-ids "$SG" --region "$REGION" \
   --output table 2>&1 | sed 's/^/    /'
 
 echo
-echo "Done. Revert with scripts/revert-security-group.sh, or leave it for the"
+echo "Done. Revert with scripts/teardown.sh, or leave it for the"
 echo "investigation and let teardown remove the whole VPC."
